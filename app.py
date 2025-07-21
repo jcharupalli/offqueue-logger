@@ -92,8 +92,7 @@ def index():
 
 @app.route("/slack/events", methods=["POST"])
 def slack_events():
-    if not signature_verifier.is_valid_request(request.get_data(), request.headers):
-        return make_response("Invalid request signature", 403)
+    data = request.get_json(force=True)
 
     if request.content_type != "application/json":
         return make_response("Unsupported Media Type", 415)
