@@ -93,23 +93,26 @@ def open_modal(trigger_id, user_id):
             }
         ]
     }
+
     slack_client.views_open(trigger_id=trigger_id, view=modal)
 
 def handle_modal_submission(payload):
     user = payload["user"]["id"]
     state_values = payload["view"]["state"]["values"]
+
     category = state_values["category"]["category_input"]["selected_option"]["value"]
     time_spent = state_values["time"]["time_input"]["value"]
     description = state_values["description"]["description_input"]["value"]
 
     logging.info(f"Modal submitted by {user}: {category}, {time_spent} mins, {description}")
 
-    # Post to Jira
-    issue_key = get_or_create_jira_issue(user, category)
-    comment = f"*Time:* {time_spent} mins\n*Description:* {description}"
-    post_comment_to_jira(issue_key, comment)
-
-    # (Optional) You can also log to Google Sheets here.
+    try:
+        issue_key = get_or_create_jira_issue(user, category)
+        logging.info(f"Jira issue key: {issue_key}")
+        comment = f"*Time:* {time_spent} mins\n*Description:* {description}"
+        post_comment_to_jira(issue_key, comment)
+    except Exception as e:
+        logging.error(f"Jira submission failed: {str(e)}")
 
     return make_response("", 200)
 
@@ -122,17 +125,28 @@ def get_or_create_jira_issue(user_id, category):
     real_name = slack_user_info["user"]["real_name"]
     summary = f"{category} logs for {real_name}"
 
+    # Check if issue exists
     search_url = f"{JIRA_BASE_URL}/rest/api/3/search"
     jql = f'project="{JIRA_PROJECT_KEY}" AND summary ~ "{summary}"'
-    response = requests.get(search_url, headers={"Accept": "application/json"}, auth=jira_auth, params={"jql": jql})
-    data = response.json()
+    logging.debug(f"Searching Jira for issue: {jql}")
+
+    search_response = requests.get(
+        search_url,
+        headers={"Accept": "application/json"},
+        auth=jira_auth,
+        params={"jql": jql}
+    )
+
+    search_response.raise_for_status()
+    data = search_response.json()
 
     if data.get("issues"):
         issue_key = data["issues"][0]["key"]
         jira_issues_cache[key] = issue_key
+        logging.info(f"Found existing Jira issue: {issue_key}")
         return issue_key
 
-    # Create issue
+    # Create issue if not found
     create_url = f"{JIRA_BASE_URL}/rest/api/3/issue"
     payload = {
         "fields": {
@@ -142,17 +156,30 @@ def get_or_create_jira_issue(user_id, category):
             "issuetype": {"name": "Task"}
         }
     }
+
+    logging.debug(f"Creating Jira issue with payload: {json.dumps(payload)}")
+
     create_response = requests.post(create_url, json=payload, auth=jira_auth)
+    create_response.raise_for_status()
     issue_key = create_response.json()["key"]
     jira_issues_cache[key] = issue_key
+    logging.info(f"Created new Jira issue: {issue_key}")
     return issue_key
 
 def post_comment_to_jira(issue_key, comment):
     url = f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}/comment"
     payload = {"body": comment}
     headers = {"Content-Type": "application/json"}
-    requests.post(url, headers=headers, json=payload, auth=jira_auth)
-    logging.info(f"Posted comment to {issue_key}")
+
+    logging.debug(f"Posting comment to {issue_key}: {comment}")
+
+    response = requests.post(url, headers=headers, json=payload, auth=jira_auth)
+    try:
+        response.raise_for_status()
+        logging.info(f"Posted comment to Jira issue: {issue_key}")
+    except requests.HTTPError as e:
+        logging.error(f"Failed to post comment to Jira: {e.response.status_code} - {e.response.text}")
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
