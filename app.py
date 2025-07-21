@@ -5,29 +5,27 @@ import os
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()  # Load .env if running locally
+# Load .env if running locally
+load_dotenv()
 
-# Slack setup
-SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
-SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET")
+# Slack credentials
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
+SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
 
+# Jira credentials
+JIRA_EMAIL = os.getenv("JIRA_EMAIL")
+JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
+JIRA_PROJECT_KEY = os.getenv("JIRA_PROJECT_KEY", "ENGLOG")
+JIRA_BASE_URL = os.getenv("JIRA_BASE_URL", "https://yourdomain.atlassian.net")
+
+# Slack & Flask setup
 app = App(token=SLACK_BOT_TOKEN, signing_secret=SLACK_SIGNING_SECRET)
 flask_app = Flask(__name__)
 handler = SlackRequestHandler(app)
 
-# Jira setup
-JIRA_EMAIL = os.environ.get("JIRA_EMAIL")              # Your Atlassian email
-JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN")      # Jira API token
-JIRA_PROJECT_KEY = "ENGLOG"                            # Your Jira project key
-JIRA_BASE_URL = "https://yourdomain.atlassian.net"     # Replace with your Jira Cloud base URL
-
 @app.command("/logoffqueuework")
-def handle_log_command(ack, body, client):
+def open_log_modal(ack, body, client):
     ack()
-
-    user_id = body["user_id"]
-
-    # Open modal for user input
     client.views_open(
         trigger_id=body["trigger_id"],
         view={
@@ -69,7 +67,7 @@ def handle_log_command(ack, body, client):
     )
 
 @app.view("log_modal")
-def handle_modal_submission(ack, body, view, client):
+def handle_modal_submit(ack, body, view, client):
     ack()
 
     user_id = body["user"]["id"]
@@ -85,11 +83,8 @@ def handle_modal_submission(ack, body, view, client):
 
     # Create Jira ticket
     jira_url = f"{JIRA_BASE_URL}/rest/api/3/issue"
-    headers = {
-        "Content-Type": "application/json"
-    }
+    headers = {"Content-Type": "application/json"}
     auth = (JIRA_EMAIL, JIRA_API_TOKEN)
-
     payload = {
         "fields": {
             "project": {"key": JIRA_PROJECT_KEY},
@@ -99,23 +94,35 @@ def handle_modal_submission(ack, body, view, client):
         }
     }
 
-    response = requests.post(jira_url, json=payload, headers=headers, auth=auth)
+    try:
+        response = requests.post(jira_url, json=payload, headers=headers, auth=auth)
+        if response.status_code == 201:
+            issue_key = response.json().get("key")
+            client.chat_postMessage(
+                channel=user_id,
+                text=f"✅ Off-queue work logged successfully. Jira issue `{issue_key}` created."
+            )
+        else:
+            client.chat_postMessage(
+                channel=user_id,
+                text=f"❌ Failed to create Jira ticket. Jira error: {response.text}"
+            )
+    except Exception as e:
+        client.chat_postMessage(
+            channel=user_id,
+            text=f"❌ Error while creating Jira ticket: {str(e)}"
+        )
 
-    if response.status_code == 201:
-        issue_key = response.json().get("key")
-        client.chat_postMessage(channel=user_id, text=f"✅ Off-queue work logged successfully and Jira ticket `{issue_key}` created.")
-    else:
-        client.chat_postMessage(channel=user_id, text="❌ Failed to create Jira ticket. Please try again later.")
-
-# Flask route for Slack
+# Flask endpoint for Slack
 @flask_app.route("/slack/events", methods=["POST"])
 def slack_events():
     return handler.handle(request)
 
-# Health check
+# Health check endpoint
 @flask_app.route("/", methods=["GET"])
 def home():
-    return "Slack + Jira app is running!"
+    return "Slack + Jira logger is running!"
 
+# Start Flask app
 if __name__ == "__main__":
     flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 3000)))
