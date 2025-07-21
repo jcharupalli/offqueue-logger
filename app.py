@@ -3,7 +3,7 @@ import logging
 from flask import Flask, request, make_response
 from slack_sdk import WebClient
 from slack_sdk.signature import SignatureVerifier
-from slack_sdk.web.classes.views import View
+from slack_sdk.models.views import View
 from slack_sdk.errors import SlackApiError
 import requests
 
