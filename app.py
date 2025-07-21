@@ -1,155 +1,155 @@
 import os
 import logging
-from flask import Flask, request, make_response
+from flask import Flask, request, make_response, jsonify
 from slack_sdk import WebClient
 from slack_sdk.signature import SignatureVerifier
-from slack_sdk.models.views import View
-from slack_sdk.errors import SlackApiError
 import requests
+from datetime import datetime
 
-# Logging setup
+app = Flask(__name__)
 logging.basicConfig(level=logging.DEBUG)
 
-# Flask app
-flask_app = Flask(__name__)
+# Slack credentials from environment
+SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
+SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET")
+JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN")
+JIRA_USER_EMAIL = os.environ.get("JIRA_USER_EMAIL")
+JIRA_PROJECT_KEY = os.environ.get("JIRA_PROJECT_KEY")  # e.g., "ENGLOG"
+JIRA_DOMAIN = os.environ.get("JIRA_DOMAIN")  # e.g., "your-domain.atlassian.net"
 
-# Load environment variables
-SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
-SLACK_SIGNING_SECRET = os.environ["SLACK_SIGNING_SECRET"]
-JIRA_BASE_URL = os.environ["JIRA_BASE_URL"]
-JIRA_EMAIL = os.environ["JIRA_EMAIL"]
-JIRA_API_TOKEN = os.environ["JIRA_API_TOKEN"]
+slack_client = WebClient(token=SLACK_BOT_TOKEN)
+signature_verifier = SignatureVerifier(signing_secret=SLACK_SIGNING_SECRET)
 
-# Slack setup
-client = WebClient(token=SLACK_BOT_TOKEN)
-signature_verifier = SignatureVerifier(SLACK_SIGNING_SECRET)
+# Util: generate issue summary per user + category
+def get_issue_summary(user_email, category):
+    date_prefix = datetime.now().strftime("%B %Y")
+    return f"[{category}] {user_email} - {date_prefix}"
 
-# Static mapping for now (can be automated later)
-USER_ISSUE_MAPPING = {
-    "jcharupalli": "ENGLOG-3",
-    # Add other user mappings here
-}
+# Util: search or create Jira issue
+def get_or_create_jira_issue(user_email, category):
+    summary = get_issue_summary(user_email, category)
 
-@flask_app.route("/slack/events", methods=["POST"])
+    # 1. Search for existing issue
+    jql = f'project = {JIRA_PROJECT_KEY} AND summary ~ "{summary}" AND reporter = "{user_email}"'
+    search_url = f"https://{JIRA_DOMAIN}/rest/api/3/search"
+    headers = {
+        "Authorization": f"Basic {os.environ.get('JIRA_AUTH_HEADER')}",  # pre-base64'd email:token
+        "Content-Type": "application/json",
+    }
+    params = {"jql": jql}
+    response = requests.get(search_url, headers=headers, params=params)
+    logging.debug(f"Jira search response: {response.text}")
+
+    issues = response.json().get("issues", [])
+    if issues:
+        return issues[0]["key"]
+
+    # 2. If not found, create new
+    create_url = f"https://{JIRA_DOMAIN}/rest/api/3/issue"
+    issue_data = {
+        "fields": {
+            "project": {"key": JIRA_PROJECT_KEY},
+            "summary": summary,
+            "issuetype": {"name": "Task"},
+            "reporter": {"emailAddress": user_email},
+            "description": {
+                "type": "doc",
+                "version": 1,
+                "content": [{
+                    "type": "paragraph",
+                    "content": [{"text": f"Issue for {category} - {user_email}", "type": "text"}]
+                }]
+            }
+        }
+    }
+    response = requests.post(create_url, headers=headers, json=issue_data)
+    logging.debug(f"Jira create response: {response.text}")
+    return response.json().get("key")
+
+# Util: add comment to Jira
+def add_jira_comment(issue_key, comment):
+    url = f"https://{JIRA_DOMAIN}/rest/api/3/issue/{issue_key}/comment"
+    headers = {
+        "Authorization": f"Basic {os.environ.get('JIRA_AUTH_HEADER')}",
+        "Content-Type": "application/json",
+    }
+    data = {
+        "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [{
+                "type": "paragraph",
+                "content": [{"text": comment, "type": "text"}]
+            }]
+        }
+    }
+    response = requests.post(url, headers=headers, json=data)
+    logging.debug(f"Jira comment response: {response.text}")
+
+@app.route("/", methods=["GET"])
+def index():
+    return "Slack Off-Queue Logger is Running!", 200
+
+@app.route("/slack/events", methods=["POST"])
 def slack_events():
-    logging.debug("Incoming Slack request")
     if not signature_verifier.is_valid_request(request.get_data(), request.headers):
-        return make_response("Invalid signature", 403)
+        return make_response("Invalid request signature", 403)
 
-    payload = request.json
-    logging.debug(f"Slack payload type: {payload.get('type')}")
+    if request.content_type != "application/json":
+        return make_response("Unsupported Media Type", 415)
 
+    payload = request.get_json()
+    logging.debug("Incoming Slack request")
+    logging.debug(f"Payload: {payload}")
+
+    # Handle Slack challenge (for URL verification)
     if payload.get("type") == "url_verification":
-        return make_response(payload.get("challenge"), 200)
+        return jsonify({"challenge": payload.get("challenge")})
 
     if payload.get("type") == "event_callback":
-        event = payload["event"]
-        if event.get("type") == "app_mention" or event.get("type") == "message":
-            return make_response("", 200)
+        event = payload.get("event", {})
+        logging.debug(f"Slack Event: {event}")
+        return make_response("Event received", 200)
 
-    if payload.get("type") == "view_submission":
-        user = payload["user"]["username"]
-        values = payload["view"]["state"]["values"]
-        logging.info(f"View submitted by {user}: {values}")
+    return make_response("OK", 200)
 
-        try:
-            category = next(iter(values["category_block"].values()))["selected_option"]["value"]
-            duration = next(iter(values["duration_block"].values()))["value"]
-            description = next(iter(values["description_block"].values()))["value"]
-
-            comment = f"*Off-Queue Log*\n• Category: {category}\n• Duration: {duration}\n• Description: {description}"
-            issue_key = USER_ISSUE_MAPPING.get(user)
-
-            if not issue_key:
-                logging.error(f"No Jira issue mapped for user: {user}")
-                return make_response("", 200)
-
-            jira_response = requests.post(
-                f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}/comment",
-                auth=(JIRA_EMAIL, JIRA_API_TOKEN),
-                headers={"Content-Type": "application/json"},
-                json={"body": comment},
-            )
-
-            logging.debug(f"Jira response: {jira_response.status_code} {jira_response.text}")
-
-            if jira_response.status_code != 201:
-                logging.error(f"Failed to post comment to Jira: {jira_response.status_code}")
-        except Exception as e:
-            logging.error(f"Error handling view_submission: {e}")
-
-        return make_response("", 200)
-
-    return make_response("", 200)
-
-@flask_app.route("/slack/command", methods=["POST"])
-def slack_command():
-    logging.debug("Slack command invoked")
-
+@app.route("/slack/submit", methods=["POST"])
+def handle_modal_submission():
     if not signature_verifier.is_valid_request(request.get_data(), request.headers):
         return make_response("Invalid signature", 403)
 
-    trigger_id = request.form["trigger_id"]
+    if request.content_type != "application/json":
+        return make_response("Unsupported Media Type", 415)
 
-    modal_view = {
-        "type": "modal",
-        "callback_id": "offqueue_log_modal",
-        "title": {"type": "plain_text", "text": "Log Off-Queue Work"},
-        "submit": {"type": "plain_text", "text": "Submit"},
-        "blocks": [
-            {
-                "type": "input",
-                "block_id": "category_block",
-                "label": {"type": "plain_text", "text": "Category"},
-                "element": {
-                    "type": "static_select",
-                    "action_id": "category_action",
-                    "placeholder": {"type": "plain_text", "text": "Select a category"},
-                    "options": [
-                        {"text": {"type": "plain_text", "text": "Interviewing"}, "value": "Interviewing"},
-                        {"text": {"type": "plain_text", "text": "Documentation"}, "value": "Documentation"},
-                        {"text": {"type": "plain_text", "text": "Learning"}, "value": "Learning"},
-                        {"text": {"type": "plain_text", "text": "Meetings"}, "value": "Meetings"},
-                    ],
-                },
-            },
-            {
-                "type": "input",
-                "block_id": "duration_block",
-                "label": {"type": "plain_text", "text": "Duration (e.g., 30m, 1h)"},
-                "element": {
-                    "type": "plain_text_input",
-                    "action_id": "duration_action",
-                    "placeholder": {"type": "plain_text", "text": "e.g., 30m or 1h"},
-                },
-            },
-            {
-                "type": "input",
-                "block_id": "description_block",
-                "label": {"type": "plain_text", "text": "Description"},
-                "element": {
-                    "type": "plain_text_input",
-                    "action_id": "description_action",
-                    "multiline": True,
-                },
-            },
-        ],
-    }
+    payload = request.get_json()
+    logging.debug(f"Modal payload: {payload}")
 
-    try:
-        response = client.views_open(trigger_id=trigger_id, view=modal_view)
-        logging.debug("Modal opened successfully")
-    except SlackApiError as e:
-        logging.error(f"Error opening modal: {e.response['error']}")
+    view = payload.get("view", {})
+    state_values = view.get("state", {}).get("values", {})
+    user = payload.get("user", {})
+    user_email = user.get("email") or user.get("username") or "unknown@example.com"
+
+    description = ""
+    category = ""
+    duration = ""
+
+    for block in state_values.values():
+        for action_id, action in block.items():
+            if action_id == "description_input":
+                description = action.get("value", "")
+            elif action_id == "category_select":
+                category = action.get("selected_option", {}).get("value", "")
+            elif action_id == "duration_input":
+                duration = action.get("value", "")
+
+    comment = f"*{datetime.now().strftime('%Y-%m-%d %H:%M')}*\nCategory: {category}\nDuration: {duration}\nDetails: {description}"
+    issue_key = get_or_create_jira_issue(user_email, category)
+    add_jira_comment(issue_key, comment)
+
+    # Placeholder: Log to Google Sheets if needed
+    logging.debug(f"Would log to Sheets: {user_email}, {category}, {duration}, {description}")
 
     return make_response("", 200)
 
-# Optional root route
-@flask_app.route("/", methods=["GET"])
-def home():
-    return "Off-Queue Logger is running."
-
-# Main method to run the app
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 3000))
-    flask_app.run(host="0.0.0.0", port=port)
+    app.run(debug=True, host="0.0.0.0", port=5000)
