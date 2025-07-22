@@ -37,11 +37,12 @@ def slack_events():
         return make_response("No retries please", 200)
 
     payload = request.form
+
     if "payload" in payload:
         data = json.loads(payload["payload"])
         if data["type"] == "view_submission":
             handle_view_submission(data)
-        return make_response("", 200)
+            return make_response("", 200)
 
     if payload.get("command") == "/logoffqueuework":
         trigger_id = payload.get("trigger_id")
@@ -87,7 +88,6 @@ def open_log_modal(trigger_id, user_id):
 def handle_view_submission(view_payload):
     user = view_payload["user"]["id"]
     values = view_payload["view"]["state"]["values"]
-
     category = values["category_input"]["category"]["selected_option"]["value"]
     duration = values["duration_input"]["duration"]["value"]
     description = values["description_input"]["description"]["value"]
@@ -98,27 +98,33 @@ def handle_view_submission(view_payload):
 
     summary = f"[Off-Queue] {category} log by {real_name} on {datetime.now().strftime('%Y-%m-%d')}"
 
-    # Create Jira issue
-    create_jira_issue(slack_email, summary, category, duration, description)
+    # Create Jira issue and notify user
+    issue_key = create_jira_issue(slack_email, summary, category, duration, description)
+    if issue_key:
+        try:
+            slack_client.chat_postMessage(
+                channel=user,
+                text=f":white_check_mark: Your off-queue work has been logged successfully.\nJira Ticket: *<{JIRA_BASE_URL}/browse/{issue_key}|{issue_key}>*"
+            )
+        except SlackApiError as e:
+            logging.error(f"Failed to send confirmation message: {e.response['error']}")
 
 def create_jira_issue(slack_email, summary, category, duration, description):
     url = f"{JIRA_BASE_URL}/rest/api/3/issue"
     auth = (JIRA_EMAIL, JIRA_API_TOKEN)
-
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json"
     }
 
-    # ADF formatted description
     adf_description = {
         "type": "doc",
         "version": 1,
         "content": [
-            {"type": "paragraph", "content": [{"type": "text", "text": f"*Category:* {category}"}]},
-            {"type": "paragraph", "content": [{"type": "text", "text": f"*Duration:* {duration} minutes"}]},
-            {"type": "paragraph", "content": [{"type": "text", "text": f"*Description:* {description}"}]},
-            {"type": "paragraph", "content": [{"type": "text", "text": f"*Logged by:* {slack_email}"}]}
+            {"type": "paragraph", "content": [{"type": "text", "text": f"Category: {category}"}]},
+            {"type": "paragraph", "content": [{"type": "text", "text": f"Duration: {duration} minutes"}]},
+            {"type": "paragraph", "content": [{"type": "text", "text": f"Description: {description}"}]},
+            {"type": "paragraph", "content": [{"type": "text", "text": f"Logged by: {slack_email}"}]}
         ]
     }
 
@@ -132,10 +138,13 @@ def create_jira_issue(slack_email, summary, category, duration, description):
     })
 
     response = requests.post(url, headers=headers, data=payload, auth=auth)
-    if response.status_code not in [200, 201]:
-        logging.error(f"Failed to create Jira issue: {response.status_code}, {response.text}")
+    if response.status_code in [200, 201]:
+        issue_key = response.json().get("key")
+        logging.info(f"Created Jira issue: {issue_key}")
+        return issue_key
     else:
-        logging.info(f"Created Jira issue: {response.json().get('key')}")
+        logging.error(f"Failed to create Jira issue: {response.status_code}, {response.text}")
+        return None
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=3000)
