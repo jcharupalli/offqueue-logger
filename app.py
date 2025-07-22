@@ -5,7 +5,7 @@ from flask import Flask, request, make_response
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from slack_sdk.models.views import View
-from slack_sdk.models.blocks import InputBlock, PlainTextInputElement, SectionBlock, StaticSelectElement, Option
+from slack_sdk.models.blocks import InputBlock, PlainTextInputElement, StaticSelectElement, Option
 import requests
 from datetime import datetime
 
@@ -42,7 +42,7 @@ def slack_events():
         data = json.loads(payload["payload"])
         if data["type"] == "view_submission":
             handle_view_submission(data)
-            return make_response("", 200)
+        return make_response("", 200)
 
     if payload.get("command") == "/logoffqueuework":
         trigger_id = payload.get("trigger_id")
@@ -117,6 +117,7 @@ def create_jira_issue(slack_email, summary, category, duration, description):
         "Content-Type": "application/json"
     }
 
+    # ADF formatted description
     adf_description = {
         "type": "doc",
         "version": 1,
@@ -128,12 +129,22 @@ def create_jira_issue(slack_email, summary, category, duration, description):
         ]
     }
 
+    # Convert duration to seconds (for Jira time tracking field)
+    try:
+        time_in_seconds = int(duration) * 60
+    except ValueError:
+        time_in_seconds = 0
+
     payload = json.dumps({
         "fields": {
             "project": {"key": JIRA_PROJECT_KEY},
             "summary": summary,
             "description": adf_description,
-            "issuetype": {"name": "Task"}
+            "issuetype": {"name": "Task"},
+            "assignee": {"name": slack_email},  # You can also use "accountId" for Atlassian Cloud
+            "timetracking": {
+                "originalEstimateSeconds": time_in_seconds
+            }
         }
     })
 
