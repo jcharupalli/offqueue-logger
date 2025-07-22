@@ -1,125 +1,117 @@
 import os
 import json
-import requests
 from flask import Flask, request, make_response
 from slack_sdk import WebClient
 from slack_sdk.signature import SignatureVerifier
-from slack_sdk.web.classes.blocks import InputBlock, PlainTextInputElement
-from slack_sdk.web.classes.views import View
-from slack_sdk.web.classes.elements import PlainTextInput
-from slack_sdk.web.classes.objects import PlainText
-from dotenv import load_dotenv
-
-load_dotenv()
-
-SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
-SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET")
-JIRA_EMAIL = os.environ.get("JIRA_EMAIL")
-JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN")
-JIRA_BASE_URL = os.environ.get("JIRA_BASE_URL")  # e.g., https://yourdomain.atlassian.net
-JIRA_PROJECT_KEY = "ENGLOG"
+import requests
+from datetime import datetime
 
 app = Flask(__name__)
+
+SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
+SLACK_SIGNING_SECRET = os.environ["SLACK_SIGNING_SECRET"]
+JIRA_BASE_URL = os.environ["JIRA_BASE_URL"]
+JIRA_EMAIL = os.environ["JIRA_EMAIL"]
+JIRA_API_TOKEN = os.environ["JIRA_API_TOKEN"]
+JIRA_PROJECT_KEY = os.environ["JIRA_PROJECT_KEY"]
+
 client = WebClient(token=SLACK_BOT_TOKEN)
-verifier = SignatureVerifier(signing_secret=SLACK_SIGNING_SECRET)
+verifier = SignatureVerifier(SLACK_SIGNING_SECRET)
+
 
 @app.route("/slack/events", methods=["POST"])
 def slack_events():
     if not verifier.is_valid_request(request.get_data(), request.headers):
-        return make_response("invalid request", 403)
+        return make_response("Invalid signature", 403)
 
     payload = request.form
     if "command" in payload and payload["command"] == "/logoffqueuework":
-        trigger_id = payload.get("trigger_id")
-        user_id = payload.get("user_id")
+        trigger_id = payload["trigger_id"]
 
-        modal_view = {
-            "type": "modal",
-            "callback_id": "log_offqueue_work_modal",
-            "title": {"type": "plain_text", "text": "Log Off-Queue Work"},
-            "submit": {"type": "plain_text", "text": "Submit"},
-            "close": {"type": "plain_text", "text": "Cancel"},
-            "blocks": [
-                {
-                    "type": "input",
-                    "block_id": "category_block",
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "category_input"
+        client.views_open(
+            trigger_id=trigger_id,
+            view={
+                "type": "modal",
+                "callback_id": "offqueue_modal",
+                "title": {"type": "plain_text", "text": "Log Off-Queue Work"},
+                "submit": {"type": "plain_text", "text": "Submit"},
+                "close": {"type": "plain_text", "text": "Cancel"},
+                "blocks": [
+                    {
+                        "type": "input",
+                        "block_id": "category_block",
+                        "label": {"type": "plain_text", "text": "Category"},
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "category_input"
+                        }
                     },
-                    "label": {"type": "plain_text", "text": "Category"}
-                },
-                {
-                    "type": "input",
-                    "block_id": "duration_block",
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "duration_input"
+                    {
+                        "type": "input",
+                        "block_id": "description_block",
+                        "label": {"type": "plain_text", "text": "Description"},
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "description_input",
+                            "multiline": True
+                        }
                     },
-                    "label": {"type": "plain_text", "text": "Duration (in minutes)"}
-                },
-                {
-                    "type": "input",
-                    "block_id": "description_block",
-                    "element": {
-                        "type": "plain_text_input",
-                        "multiline": True,
-                        "action_id": "description_input"
-                    },
-                    "label": {"type": "plain_text", "text": "Description"}
-                }
-            ]
-        }
-
-        client.views_open(trigger_id=trigger_id, view=modal_view)
+                    {
+                        "type": "input",
+                        "block_id": "duration_block",
+                        "label": {"type": "plain_text", "text": "Duration (in minutes)"},
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "duration_input"
+                        }
+                    }
+                ]
+            }
+        )
         return make_response("", 200)
 
     if "payload" in payload:
         data = json.loads(payload["payload"])
-        if data["type"] == "view_submission" and data["view"]["callback_id"] == "log_offqueue_work_modal":
-            user = data["user"]["id"]
+        if data["type"] == "view_submission" and data["view"]["callback_id"] == "offqueue_modal":
+            user = data["user"]["username"]
             values = data["view"]["state"]["values"]
             category = values["category_block"]["category_input"]["value"]
-            duration = values["duration_block"]["duration_input"]["value"]
             description = values["description_block"]["description_input"]["value"]
+            duration = values["duration_block"]["duration_input"]["value"]
 
-            # Create Jira issue
-            jira_url = f"{JIRA_BASE_URL}/rest/api/3/issue"
-            headers = {
-                "Content-Type": "application/json"
-            }
-            auth = (JIRA_EMAIL, JIRA_API_TOKEN)
-            issue_data = {
-                "fields": {
-                    "project": {"key": JIRA_PROJECT_KEY},
-                    "summary": f"{category} work log by Slack user {user}",
-                    "description": {
-                        "type": "doc",
-                        "version": 1,
-                        "content": [
-                            {
-                                "type": "paragraph",
-                                "content": [
-                                    {"type": "text", "text": f"Duration: {duration} minutes\nDescription: {description}"}
-                                ]
-                            }
-                        ]
-                    },
-                    "issuetype": {"name": "Task"}
+            # --- Create Jira issue ---
+            jira_summary = f"[Off-Queue] {category} by {user}"
+            jira_description = f"*User:* {user}\n*Category:* {category}\n*Description:* {description}\n*Duration:* {duration} minutes\n*Logged on:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+
+            jira_response = requests.post(
+                f"{JIRA_BASE_URL}/rest/api/3/issue",
+                auth=(JIRA_EMAIL, JIRA_API_TOKEN),
+                headers={"Content-Type": "application/json"},
+                json={
+                    "fields": {
+                        "project": {"key": JIRA_PROJECT_KEY},
+                        "summary": jira_summary,
+                        "description": jira_description,
+                        "issuetype": {"name": "Task"}
+                    }
                 }
-            }
+            )
 
-            response = requests.post(jira_url, headers=headers, auth=auth, json=issue_data)
-            if response.status_code == 201:
-                issue_key = response.json()["key"]
-                confirmation_msg = f"✅ Your off-queue work has been logged. Jira ticket: {issue_key}"
+            if jira_response.status_code == 201:
+                issue_key = jira_response.json().get("key")
+                confirmation_text = f"✅ Logged your off-queue work in Jira as issue *{issue_key}*."
             else:
-                confirmation_msg = f"❌ Failed to create Jira issue. Status: {response.status_code}"
+                confirmation_text = f"⚠️ Failed to create Jira issue. Please check integration. ({jira_response.status_code})"
 
-            client.chat_postMessage(channel=user, text=confirmation_msg)
+            client.chat_postMessage(
+                channel=data["user"]["id"],
+                text=confirmation_text
+            )
+
             return make_response("", 200)
 
-    return make_response("no action", 200)
+    return make_response("No action taken", 200)
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=3000)
