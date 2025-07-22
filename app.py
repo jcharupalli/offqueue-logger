@@ -60,7 +60,7 @@ def slack_events():
 
     elif "payload" in data:
         payload = request.form["payload"]
-        payload_data = eval(payload)  # Slack sends stringified dict; use json.loads in prod
+        payload_data = json.loads(payload)  # Slack sends stringified dict; use json.loads in prod
 
         if payload_data["type"] == "view_submission" and payload_data["view"]["callback_id"] == "log_offqueue_modal":
             user_id = payload_data["user"]["id"]
