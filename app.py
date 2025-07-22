@@ -117,6 +117,22 @@ def create_jira_issue(slack_email, summary, category, duration, description):
         "Content-Type": "application/json"
     }
 
+    # Convert duration to Jira time estimate format (e.g. "30m")
+    try:
+        estimate = f"{int(duration)}m"
+    except ValueError:
+        estimate = "0m"
+
+    # Get Jira accountId from email
+    user_lookup_url = f"{JIRA_BASE_URL}/rest/api/3/user/search?query={slack_email}"
+    user_response = requests.get(user_lookup_url, headers=headers, auth=auth)
+
+    if user_response.status_code != 200 or not user_response.json():
+        logging.error(f"Failed to fetch Jira user for email {slack_email}: {user_response.text}")
+        return None
+
+    account_id = user_response.json()[0]["accountId"]
+
     # ADF formatted description
     adf_description = {
         "type": "doc",
@@ -129,26 +145,21 @@ def create_jira_issue(slack_email, summary, category, duration, description):
         ]
     }
 
-    # Convert duration to seconds (for Jira time tracking field)
-    try:
-        time_in_seconds = int(duration) * 60
-    except ValueError:
-        time_in_seconds = 0
-
     payload = json.dumps({
         "fields": {
             "project": {"key": JIRA_PROJECT_KEY},
             "summary": summary,
             "description": adf_description,
             "issuetype": {"name": "Task"},
-            "assignee": {"name": slack_email},  # You can also use "accountId" for Atlassian Cloud
+            "assignee": {"accountId": account_id},
             "timetracking": {
-                "originalEstimateSeconds": time_in_seconds
+                "originalEstimate": estimate
             }
         }
     })
 
     response = requests.post(url, headers=headers, data=payload, auth=auth)
+
     if response.status_code in [200, 201]:
         issue_key = response.json().get("key")
         logging.info(f"Created Jira issue: {issue_key}")
@@ -156,6 +167,7 @@ def create_jira_issue(slack_email, summary, category, duration, description):
     else:
         logging.error(f"Failed to create Jira issue: {response.status_code}, {response.text}")
         return None
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=3000)
