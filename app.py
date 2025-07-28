@@ -25,9 +25,11 @@ slack_client = WebClient(token=SLACK_BOT_TOKEN)
 # Category options
 CATEGORY_OPTIONS = [
     Option(text="Interviewing", value="Interviewing"),
-    Option(text="Documentation", value="Documentation"),
-    Option(text="Tech Debt Cleanup", value="Tech Debt Cleanup"),
+    Option(text="Product/Process Documentation", value="Product/Process Documentation"),
+    Option(text="Case Reviews", value="Case Reviews"),
     Option(text="Meetings", value="Meetings"),
+    Option(text="Growth Plan 1/1 discusssions", value="Growth Plan 1/1 discusssions"),
+    Option(text="Training", value="Training"),
     Option(text="Other", value="Other"),
 ]
 
@@ -96,7 +98,9 @@ def handle_view_submission(view_payload):
     real_name = username_resp["user"]["real_name"]
     slack_email = username_resp["user"]["profile"]["email"]
 
-    summary = f"[Off-Queue] {category} log by {real_name} on {datetime.now().strftime('%Y-%m-%d')}"
+    # summary = f"[Off-Queue] {category} log by {real_name} on {datetime.now().strftime('%Y-%m-%d')}"
+    summary = description[:250]  # Truncate to fit Jira's summary limit
+
 
     # Create Jira issue and notify user
     issue_key = create_jira_issue(slack_email, summary, category, duration, description)
@@ -149,7 +153,8 @@ def create_jira_issue(slack_email, summary, category, duration, description):
         "fields": {
             "project": {"key": JIRA_PROJECT_KEY},
             "summary": summary,
-            "description": adf_description,
+            "customfield_10087": { "value": category },
+            "description": description,
             "issuetype": {"name": "Task"},
             "assignee": {"accountId": account_id},
             "timetracking": {
