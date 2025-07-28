@@ -121,11 +121,19 @@ def create_jira_issue(slack_email, summary, category, duration, description):
         "Content-Type": "application/json"
     }
 
-    # Convert duration to Jira time estimate format (e.g. "30m")
+    # Convert duration into "Xh Ym" format for estimated time field (customfield_10086)
     try:
-        estimate = f"{int(duration)}m"
+        minutes = int(duration)
+        hours = minutes // 60
+        remaining_minutes = minutes % 60
+        estimate_str = ""
+        if hours > 0:
+            estimate_str += f"{hours}h "
+        if remaining_minutes > 0 or hours == 0:
+            estimate_str += f"{remaining_minutes}m"
+        estimate_str = estimate_str.strip()
     except ValueError:
-        estimate = "0m"
+        estimate_str = "0m"
 
     # Get Jira accountId from email
     user_lookup_url = f"{JIRA_BASE_URL}/rest/api/3/user/search?query={slack_email}"
@@ -134,20 +142,6 @@ def create_jira_issue(slack_email, summary, category, duration, description):
         logging.error(f"Failed to fetch Jira user for email {slack_email}: {user_response.text}")
         return None
     account_id = user_response.json()[0]["accountId"]
-
-    # Ensure category matches exactly one of the allowed values
-    allowed_categories = [
-        "Interview",
-        "Product/Process Documentation",
-        "Case Reviews",
-        "Meetings",
-        "Growth Plan 1/1 discusssions",
-        "Training",
-        "Other"
-    ]
-    if category not in allowed_categories:
-        logging.warning(f"Category '{category}' not found in allowed options. Defaulting to 'Other'.")
-        category = "Other"
 
     # ADF formatted description
     adf_description = {
@@ -165,15 +159,11 @@ def create_jira_issue(slack_email, summary, category, duration, description):
         "fields": {
             "project": {"key": JIRA_PROJECT_KEY},
             "summary": summary,
-            "customfield_10087": {
-                "value": category  # Make sure this exactly matches a dropdown option
-            },
             "description": adf_description,
             "issuetype": {"name": "Task"},
             "assignee": {"accountId": account_id},
-            "timetracking": {
-                "originalEstimate": estimate
-            }
+            "customfield_10087": {"value": category},  # Task Category dropdown
+            "customfield_10086": estimate_str  # Estimated Time (text format like "1h 15m")
         }
     })
 
