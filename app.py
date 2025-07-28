@@ -24,7 +24,7 @@ slack_client = WebClient(token=SLACK_BOT_TOKEN)
 
 # Category options
 CATEGORY_OPTIONS = [
-    Option(text="Interviewing", value="Interviewing"),
+    Option(text="Interview", value="Interview"),
     Option(text="Product/Process Documentation", value="Product/Process Documentation"),
     Option(text="Case Reviews", value="Case Reviews"),
     Option(text="Meetings", value="Meetings"),
@@ -130,12 +130,24 @@ def create_jira_issue(slack_email, summary, category, duration, description):
     # Get Jira accountId from email
     user_lookup_url = f"{JIRA_BASE_URL}/rest/api/3/user/search?query={slack_email}"
     user_response = requests.get(user_lookup_url, headers=headers, auth=auth)
-
     if user_response.status_code != 200 or not user_response.json():
         logging.error(f"Failed to fetch Jira user for email {slack_email}: {user_response.text}")
         return None
-
     account_id = user_response.json()[0]["accountId"]
+
+    # Ensure category matches exactly one of the allowed values
+    allowed_categories = [
+        "Interview",
+        "Product/Process Documentation",
+        "Case Reviews",
+        "Meetings",
+        "Growth Plan 1/1 discusssions",
+        "Training",
+        "Other"
+    ]
+    if category not in allowed_categories:
+        logging.warning(f"Category '{category}' not found in allowed options. Defaulting to 'Other'.")
+        category = "Other"
 
     # ADF formatted description
     adf_description = {
@@ -153,7 +165,9 @@ def create_jira_issue(slack_email, summary, category, duration, description):
         "fields": {
             "project": {"key": JIRA_PROJECT_KEY},
             "summary": summary,
-            "customfield_10087": { "value": category },
+            "customfield_10087": {
+                "value": category  # Make sure this exactly matches a dropdown option
+            },
             "description": adf_description,
             "issuetype": {"name": "Task"},
             "assignee": {"accountId": account_id},
@@ -162,6 +176,7 @@ def create_jira_issue(slack_email, summary, category, duration, description):
             }
         }
     })
+
 
     response = requests.post(url, headers=headers, data=payload, auth=auth)
 
