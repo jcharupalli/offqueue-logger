@@ -151,7 +151,7 @@ def create_jira_issue(slack_email, summary, category, duration, description):
             {"type": "paragraph", "content": [{"type": "text", "text": f"Category: {category}"}]},
             {"type": "paragraph", "content": [{"type": "text", "text": f"Duration: {duration} minutes"}]},
             {"type": "paragraph", "content": [{"type": "text", "text": f"Description: {description}"}]},
-            {"type": "paragraph", "content": [{"type": "text", "text": f"Logged by: {slack_email}"}]}
+            #{"type": "paragraph", "content": [{"type": "text", "text": f"Logged by: {slack_email}"}]}
         ]
     }
 
