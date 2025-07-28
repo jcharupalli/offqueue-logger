@@ -154,7 +154,7 @@ def create_jira_issue(slack_email, summary, category, duration, description):
             "project": {"key": JIRA_PROJECT_KEY},
             "summary": summary,
             "customfield_10087": { "value": category },
-            "description": description,
+            "description": adf_description,
             "issuetype": {"name": "Task"},
             "assignee": {"accountId": account_id},
             "timetracking": {
